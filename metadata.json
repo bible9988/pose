@@ -1,5 +1,7 @@
 {
-  "name": "🍌 Nano Bananary｜ZHO",
-  "description": "Upload an image and select one of 50 creative prompts to edit or generate a new version using Google's powerful image model.",
-  "requestFramePermissions": []
+  "name": "Copy of Copy of PictureMe AI Photo Booth",
+  "description": "Transform your photos with various AI-powered themes. See yourself through the decades, try on new hairstyles, get professional headshots, and more, all powered by Gemini.",
+  "requestFramePermissions": [
+    "camera"
+  ]
 }

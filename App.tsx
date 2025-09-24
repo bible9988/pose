@@ -1,469 +1,463 @@
 
+import React, { useState, useRef, useCallback } from 'react';
+import { motion } from 'framer-motion';
+import { GeneratedImage, TemplateName, Prompt, StyleLookbookTemplate } from './types';
+import { TEMPLATES } from './constants';
+import { toBase64, createSingleFramedImage, createAlbumImage } from './services/imageService';
+import { generateImage, generateDynamicPrompt, getModelInstruction } from './services/geminiService';
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { TRANSFORMATIONS } from './constants';
-import { editImage } from './services/geminiService';
-import type { GeneratedContent, Transformation } from './types';
-import TransformationSelector from './components/TransformationSelector';
-import ResultDisplay from './components/ResultDisplay';
-import LoadingSpinner from './components/LoadingSpinner';
-import ErrorMessage from './components/ErrorMessage';
-import ImageEditorCanvas from './components/ImageEditorCanvas';
-// Fix: Removed unused and non-existent 'fileToDataUrl' import.
-import { dataUrlToFile, embedWatermark, loadImage, resizeImageToMatch, downloadImage } from './utils/fileUtils';
-import ImagePreviewModal from './components/ImagePreviewModal';
-import MultiImageUploader from './components/MultiImageUploader';
-import HistoryPanel from './components/HistoryPanel';
-
-type ActiveTool = 'mask' | 'none';
+import { IconCamera, IconSparkles, IconUpload, IconX, IconPlus } from './components/Icons';
+import { Button } from './components/Button';
+import { PhotoDisplay } from './components/PhotoDisplay';
+import { LoadingCard } from './components/LoadingCard';
+import { ErrorCard } from './components/ErrorCard';
+import { CameraModal } from './components/CameraModal';
+import { TemplateCard } from './components/TemplateCard';
+import { RadioPill } from './components/RadioPill';
+import { ErrorNotification } from './components/ErrorNotification';
+import { AlbumDownloadButton } from './components/AlbumDownloadButton';
 
 const App: React.FC = () => {
-  const [transformations, setTransformations] = useState<Transformation[]>(() => {
-    try {
-      const savedOrder = localStorage.getItem('transformationOrder');
-      if (savedOrder) {
-        const orderedTitles = JSON.parse(savedOrder) as string[];
-        const transformationMap = new Map(TRANSFORMATIONS.map(t => [t.title, t]));
-        
-        const orderedTransformations = orderedTitles
-          .map(title => transformationMap.get(title))
-          .filter((t): t is Transformation => !!t);
+    const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+    const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+    const [isLoading, setIsLoading] = useState(false);
+    const [isSettingUp, setIsSettingUp] = useState(false);
+    const [isDownloadingAlbum, setIsDownloadingAlbum] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [isUploading, setIsUploading] = useState(false);
+    const [isCameraOpen, setIsCameraOpen] = useState(false);
+    const resultsRef = useRef<HTMLDivElement>(null);
 
-        const savedTitlesSet = new Set(orderedTitles);
-        const newTransformations = TRANSFORMATIONS.filter(t => !savedTitlesSet.has(t.title));
-        
-        return [...orderedTransformations, ...newTransformations];
-      }
-    } catch (e) {
-      console.error("Failed to load or parse transformation order from localStorage", e);
-    }
-    return TRANSFORMATIONS;
-  });
+    const [template, setTemplate] = useState<TemplateName | null>(null);
+    const [currentAlbumStyle, setCurrentAlbumStyle] = useState('');
 
-  const [selectedTransformation, setSelectedTransformation] = useState<Transformation | null>(null);
-  const [primaryImageUrl, setPrimaryImageUrl] = useState<string | null>(null);
-  const [primaryFile, setPrimaryFile] = useState<File | null>(null);
-  const [secondaryImageUrl, setSecondaryImageUrl] = useState<string | null>(null);
-  const [secondaryFile, setSecondaryFile] = useState<File | null>(null);
-  const [generatedContent, setGeneratedContent] = useState<GeneratedContent | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [loadingMessage, setLoadingMessage] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
-  const [maskDataUrl, setMaskDataUrl] = useState<string | null>(null);
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
-  const [customPrompt, setCustomPrompt] = useState<string>('');
-  const [activeTool, setActiveTool] = useState<ActiveTool>('none');
-  const [history, setHistory] = useState<GeneratedContent[]>([]);
-  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState<boolean>(false);
-  
-  useEffect(() => {
-    try {
-      const orderToSave = transformations.map(t => t.title);
-      localStorage.setItem('transformationOrder', JSON.stringify(orderToSave));
-    } catch (e) {
-      console.error("Failed to save transformation order to localStorage", e);
-    }
-  }, [transformations]);
+    const [hairColors, setHairColors] = useState<string[]>([]);
+    const [selectedHairStyles, setSelectedHairStyles] = useState<string[]>([]);
+    const [customHairStyle, setCustomHairStyle] = useState('');
+    const [isCustomHairActive, setIsCustomHairActive] = useState(false);
 
+    const [lookbookStyle, setLookbookStyle] = useState('');
+    const [customLookbookStyle, setCustomLookbookStyle] = useState('');
+    const [moodStyles, setMoodStyles] = useState<string[]>([]);
 
-  const handleSelectTransformation = (transformation: Transformation) => {
-    setSelectedTransformation(transformation);
-    setGeneratedContent(null);
-    setError(null);
-    if (transformation.prompt !== 'CUSTOM') {
-      setCustomPrompt('');
-    }
-  };
+    const [headshotExpression, setHeadshotExpression] = useState('Friendly Smile');
+    const [headshotPose, setHeadshotPose] = useState('Forward');
 
-  const handlePrimaryImageSelect = useCallback((file: File, dataUrl: string) => {
-    setPrimaryFile(file);
-    setPrimaryImageUrl(dataUrl);
-    setGeneratedContent(null);
-    setError(null);
-    setMaskDataUrl(null);
-    setActiveTool('none');
-  }, []);
-
-  const handleSecondaryImageSelect = useCallback((file: File, dataUrl: string) => {
-    setSecondaryFile(file);
-    setSecondaryImageUrl(dataUrl);
-    setGeneratedContent(null);
-    setError(null);
-  }, []);
-  
-  const handleClearPrimaryImage = () => {
-    setPrimaryImageUrl(null);
-    setPrimaryFile(null);
-    setGeneratedContent(null);
-    setError(null);
-    setMaskDataUrl(null);
-    setActiveTool('none');
-  };
-  
-  const handleClearSecondaryImage = () => {
-    setSecondaryImageUrl(null);
-    setSecondaryFile(null);
-  };
-
-  const handleGenerate = useCallback(async () => {
-    if (!primaryImageUrl || !selectedTransformation) {
-        setError("Please upload an image and select an effect.");
-        return;
-    }
-    if (selectedTransformation.isMultiImage && !secondaryImageUrl) {
-        setError("Please upload both required images.");
-        return;
-    }
-    
-    const promptToUse = selectedTransformation.prompt === 'CUSTOM' ? customPrompt : selectedTransformation.prompt;
-    if (!promptToUse.trim()) {
-        setError("Please enter a prompt describing the change you want to see.");
-        return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-    setGeneratedContent(null);
-    setLoadingMessage('');
-
-    try {
-        const primaryMimeType = primaryImageUrl!.split(';')[0].split(':')[1] ?? 'image/png';
-        const primaryBase64 = primaryImageUrl!.split(',')[1];
-        const maskBase64 = maskDataUrl ? maskDataUrl.split(',')[1] : null;
-
-        if (selectedTransformation.isTwoStep) {
-            // Step 1: Generate line art (using only the primary image)
-            setLoadingMessage('Step 1: Creating line art...');
-            const stepOneResult = await editImage(
-                primaryBase64,
-                primaryMimeType,
-                promptToUse, // First prompt
-                null, // No mask for step 1
-                null  // No secondary image for step 1
-            );
-
-            if (!stepOneResult.imageUrl) {
-                throw new Error("Step 1 (line art) failed to generate an image.");
+    const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (file) {
+            setIsUploading(true);
+            setError(null);
+            try {
+                const base64Image = await toBase64(file);
+                setUploadedImage(base64Image);
+                setGeneratedImages([]);
+            } catch (err) {
+                console.error("Error during image upload:", err);
+                setError("That image couldn't be processed. Please try another file.");
+            } finally {
+                setIsUploading(false);
+                 if (fileInputRef.current) fileInputRef.current.value = "";
             }
-
-            // Step 2: Color the line art using the palette
-            setLoadingMessage('Step 2: Applying color palette...');
-            const stepOneImageBase64 = stepOneResult.imageUrl.split(',')[1];
-            const stepOneImageMimeType = stepOneResult.imageUrl.split(';')[0].split(':')[1] ?? 'image/png';
-
-            let secondaryImagePayload = null;
-            if (selectedTransformation.isMultiImage && secondaryImageUrl && primaryImageUrl) {
-                // Load primary image to get its dimensions
-                const primaryImage = await loadImage(primaryImageUrl);
-                // Resize color palette to match primary image's aspect ratio
-                const resizedSecondaryImageUrl = await resizeImageToMatch(secondaryImageUrl, primaryImage);
-
-                const secondaryMimeType = resizedSecondaryImageUrl.split(';')[0].split(':')[1] ?? 'image/png';
-                const secondaryBase64 = resizedSecondaryImageUrl.split(',')[1];
-                secondaryImagePayload = { base64: secondaryBase64, mimeType: secondaryMimeType };
-            }
-
-            const stepTwoResult = await editImage(
-                stepOneImageBase64,
-                stepOneImageMimeType,
-                selectedTransformation.stepTwoPrompt!, // Second prompt
-                null, // No mask for step 2
-                secondaryImagePayload // Use the RESIZED color palette here
-            );
-            
-            if (stepTwoResult.imageUrl) {
-                stepTwoResult.imageUrl = await embedWatermark(stepTwoResult.imageUrl, "Nano Bananary｜ZHO");
-            }
-
-            const finalResult = {
-                imageUrl: stepTwoResult.imageUrl,
-                text: stepTwoResult.text,
-                secondaryImageUrl: stepOneResult.imageUrl, // Store intermediate result
-            };
-            setGeneratedContent(finalResult);
-            setHistory(prev => [finalResult, ...prev]);
-
-        } else { // Single-step generation
-             let secondaryImagePayload = null;
-            if (selectedTransformation.isMultiImage && secondaryImageUrl) {
-                const secondaryMimeType = secondaryImageUrl.split(';')[0].split(':')[1] ?? 'image/png';
-                const secondaryBase64 = secondaryImageUrl.split(',')[1];
-                secondaryImagePayload = { base64: secondaryBase64, mimeType: secondaryMimeType };
-            }
-            setLoadingMessage('Generating your masterpiece...');
-            const result = await editImage(
-                primaryBase64, 
-                primaryMimeType, 
-                promptToUse,
-                maskBase64,
-                secondaryImagePayload
-            );
-
-            if (result.imageUrl) {
-                result.imageUrl = await embedWatermark(result.imageUrl, "Nano Bananary｜ZHO");
-            }
-
-            setGeneratedContent(result);
-            setHistory(prev => [result, ...prev]);
         }
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : "An unknown error occurred.");
-    } finally {
-      setIsLoading(false);
-      setLoadingMessage('');
-    }
-  }, [primaryImageUrl, secondaryImageUrl, selectedTransformation, maskDataUrl, customPrompt, transformations]);
+    };
+
+    const handleCaptureConfirm = (imageDataUrl: string) => {
+        setUploadedImage(imageDataUrl);
+        setGeneratedImages([]);
+        setError(null);
+    };
+
+    const handleGenerateClick = async () => {
+        if (!uploadedImage) return setError("Please upload a photo to get started!");
+        if (!template) return setError("Please select a theme!");
+
+        if (template === 'styleLookbook' && (!lookbookStyle || (lookbookStyle === 'Other' && !customLookbookStyle.trim()))) {
+            return setError("Please choose or enter a fashion style for your lookbook!");
+        }
+        if (template === 'hairStyler' && selectedHairStyles.length === 0 && (!isCustomHairActive || !customHairStyle.trim())) {
+            return setError("Please select at least one hairstyle to generate!");
+        }
+        if (template === 'hairStyler' && isCustomHairActive && !customHairStyle.trim()) {
+            return setError("Please enter your custom hairstyle or deselect 'Other...'");
+        }
+
+        setIsLoading(true);
+        setError(null);
+        setGeneratedImages([]);
+
+        setTimeout(() => {
+            resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+
+        const imageWithoutPrefix = uploadedImage.split(',')[1];
+        const activeTemplate = TEMPLATES[template];
+
+        let dynamicStyleForAlbum = '';
+        if (template === 'eightiesMall') {
+            setIsSettingUp(true);
+            try {
+                dynamicStyleForAlbum = await generateDynamicPrompt("A specific, creative, and detailed style for an 80s mall portrait studio photoshoot.");
+                setCurrentAlbumStyle(dynamicStyleForAlbum);
+            } catch (e) {
+                setError("We couldn't generate a photoshoot style. Please try again.");
+                setIsLoading(false);
+                setIsSettingUp(false);
+                return;
+            }
+            setIsSettingUp(false);
+        } else {
+            setCurrentAlbumStyle('');
+        }
+        
+        const promptsForGeneration = template === 'hairStyler'
+            ? [...activeTemplate.prompts.filter(p => selectedHairStyles.includes(p.id)), ...(isCustomHairActive && customHairStyle.trim() ? [{ id: customHairStyle, base: customHairStyle }] : [])]
+            : activeTemplate.prompts;
+
+        if (!promptsForGeneration || promptsForGeneration.length === 0) {
+            setError("There was an issue preparing the creative ideas. Please try again.");
+            setIsLoading(false);
+            return;
+        }
+
+        setGeneratedImages(promptsForGeneration.map(p => ({ id: p.id, status: 'pending', imageUrl: null })));
+        
+        for (let i = 0; i < promptsForGeneration.length; i++) {
+            const p = promptsForGeneration[i];
+            try {
+                const modelInstruction = getModelInstruction(template, p, {
+                    headshotExpression, headshotPose,
+                    currentAlbumStyle: dynamicStyleForAlbum,
+                    lookbookStyle, customLookbookStyle,
+                    hairColors,
+                    moodStyles,
+                });
+
+                const imageUrl = await generateImage(modelInstruction, imageWithoutPrefix);
+
+                setGeneratedImages(prev => prev.map((img, index) =>
+                    index === i ? { ...img, status: 'success', imageUrl } : img
+                ));
+            } catch (err) {
+                console.error(`Failed to generate image for ${p.id}:`, err);
+                setGeneratedImages(prev => prev.map((img, index) =>
+                    index === i ? { ...img, status: 'failed' } : img
+                ));
+            }
+        }
+        setIsLoading(false);
+    };
+    
+    const regenerateImageAtIndex = useCallback(async (imageIndex: number) => {
+        const imageToRegenerate = generatedImages[imageIndex];
+        if (!imageToRegenerate || !template || !uploadedImage) return;
+
+        setGeneratedImages(prev => prev.map((img, index) =>
+            index === imageIndex ? { ...img, status: 'pending' } : img
+        ));
+        setError(null);
+
+        const activeTemplate = TEMPLATES[template];
+        const promptsForGeneration = template === 'hairStyler'
+            ? [...activeTemplate.prompts.filter(p => selectedHairStyles.includes(p.id)), ...(isCustomHairActive && customHairStyle.trim() ? [{ id: customHairStyle, base: customHairStyle }] : [])]
+            : activeTemplate.prompts;
+
+        const prompt = promptsForGeneration[imageIndex];
+        if (!prompt) {
+            setError("Could not find the prompt to regenerate.");
+            setGeneratedImages(prev => prev.map((img, index) => index === imageIndex ? { ...img, status: 'failed' } : img));
+            return;
+        }
+
+        try {
+            if (template === 'eightiesMall' && !currentAlbumStyle) throw new Error("Cannot regenerate without an album style. Please start over.");
+            
+            const imageWithoutPrefix = uploadedImage.split(',')[1];
+            const modelInstruction = getModelInstruction(template, prompt, { headshotExpression, headshotPose, currentAlbumStyle, lookbookStyle, customLookbookStyle, hairColors, moodStyles });
+            
+            const imageUrl = await generateImage(modelInstruction, imageWithoutPrefix);
+
+            setGeneratedImages(prev => prev.map((img, index) =>
+                index === imageIndex ? { ...img, status: 'success', imageUrl } : img
+            ));
+        } catch (err) {
+            console.error(`Regeneration failed for ${prompt.id}:`, err);
+            setError(`Oops! Regeneration for "${prompt.id}" failed. Please try again.`);
+            setGeneratedImages(prev => prev.map((img, index) =>
+                index === imageIndex ? { ...img, status: 'failed' } : img
+            ));
+        }
+    }, [generatedImages, template, uploadedImage, currentAlbumStyle, headshotExpression, headshotPose, lookbookStyle, customLookbookStyle, hairColors, selectedHairStyles, isCustomHairActive, customHairStyle, moodStyles]);
 
 
-  const handleUseImageAsInput = useCallback(async (imageUrl: string) => {
-    if (!imageUrl) return;
+    const triggerDownload = async (href: string, fileName: string) => {
+        try {
+            const response = await fetch(href);
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(link);
+        } catch (error) {
+            console.error("Could not download the image:", error);
+            setError("Sorry, the download failed. Please try again.");
+        }
+    };
+    
+    const handleDownloadRequest = async (imageUrl: string, era: string, ratio: '1:1' | '9:16') => {
+        const fileName = `picture-me-${era.toLowerCase().replace(/\s+/g, '-')}-${ratio.replace(':', 'x')}.png`;
+        try {
+            const shouldAddLabel = template && !['headshots', 'eightiesMall', 'styleLookbook', 'figurines'].includes(template);
+            const framedImageUrl = await createSingleFramedImage(imageUrl, ratio, shouldAddLabel ? era : null);
+            await triggerDownload(framedImageUrl, fileName);
+        } catch (err) {
+            console.error(`Failed to create framed image for download:`, err);
+            setError(`Could not prepare that image for download. Please try again.`);
+        }
+    };
 
-    try {
-      const newFile = await dataUrlToFile(imageUrl, `edited-${Date.now()}.png`);
-      setPrimaryFile(newFile);
-      setPrimaryImageUrl(imageUrl);
-      setGeneratedContent(null);
-      setError(null);
-      setMaskDataUrl(null);
-      setActiveTool('none');
-      setSecondaryFile(null);
-      setSecondaryImageUrl(null);
-      setSelectedTransformation(null); 
-    } catch (err) {
-      console.error("Failed to use image as input:", err);
-      setError("Could not use the generated image as a new input.");
-    }
-  }, []);
-  
-  const toggleHistoryPanel = () => setIsHistoryPanelOpen(prev => !prev);
-  
-  const handleUseHistoryImageAsInput = (imageUrl: string) => {
-      handleUseImageAsInput(imageUrl);
-      setIsHistoryPanelOpen(false);
-  };
-  
-  const handleDownloadFromHistory = (imageUrl: string, type: 'line-art' | 'final-result' | 'single-result') => {
-      const fileExtension = imageUrl.split(';')[0].split('/')[1] || 'png';
-      const filename = `${type}-${Date.now()}.${fileExtension}`;
-      downloadImage(imageUrl, filename);
-  };
+    const handleAlbumDownloadRequest = async (ratio: '1:1' | '9:16') => {
+        if (isDownloadingAlbum || !template) return;
+        setIsDownloadingAlbum(true);
+        setError(null);
 
-  const handleBackToSelection = () => {
-    setSelectedTransformation(null);
-  };
+        try {
+            const successfulImages = generatedImages.filter(img => img.status === 'success');
+            if (successfulImages.length === 0) {
+                setError("There are no successful images to include in an album.");
+                setIsDownloadingAlbum(false);
+                return;
+            }
 
-  const handleResetApp = () => {
-    setSelectedTransformation(null);
-    setPrimaryImageUrl(null);
-    setPrimaryFile(null);
-    setSecondaryImageUrl(null);
-    setSecondaryFile(null);
-    setGeneratedContent(null);
-    setError(null);
-    setIsLoading(false);
-    setMaskDataUrl(null);
-    setCustomPrompt('');
-    setActiveTool('none');
-    // Don't clear history on reset
-  };
+            let albumTitle = "My PictureMe Album";
+            if (template) albumTitle = TEMPLATES[template].name;
 
-  const handleOpenPreview = (url: string) => setPreviewImageUrl(url);
-  const handleClosePreview = () => setPreviewImageUrl(null);
-  
-  const toggleMaskTool = () => {
-    setActiveTool(current => (current === 'mask' ? 'none' : 'mask'));
-  };
-  
-  const isCustomPromptEmpty = selectedTransformation?.prompt === 'CUSTOM' && !customPrompt.trim();
-  const isSingleImageReady = !selectedTransformation?.isMultiImage && primaryImageUrl;
-  const isMultiImageReady = selectedTransformation?.isMultiImage && primaryImageUrl && secondaryImageUrl;
-  const isGenerateDisabled = isLoading || isCustomPromptEmpty || (!isSingleImageReady && !isMultiImageReady);
+            const shouldAddLabel = !['headshots', 'eightiesMall', 'styleLookbook', 'figurines'].includes(template);
+            
+            const albumDataUrl = await createAlbumImage(successfulImages, ratio, albumTitle, shouldAddLabel);
 
+            await triggerDownload(albumDataUrl, `picture-me-album-${ratio.replace(':', 'x')}.png`);
 
-  return (
-    <div className="min-h-screen bg-black text-gray-300 font-sans">
-      <header className="bg-black/60 backdrop-blur-lg sticky top-0 z-20 p-4 border-b border-white/10">
-        <div className="container mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-yellow-400 cursor-pointer" onClick={handleResetApp}>
-            🍌 Nano Bananary｜ZHO
-          </h1>
-          <button
-            onClick={toggleHistoryPanel}
-            className="flex items-center gap-2 py-2 px-3 text-sm font-semibold text-gray-200 bg-gray-800/50 rounded-md hover:bg-gray-700/50 transition-colors duration-200"
-            aria-label="Toggle generation history"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
-            </svg>
-            <span>History</span>
-          </button>
-        </div>
-      </header>
+        } catch (err) {
+            console.error("Failed to create or download album:", err);
+            setError("Sorry, the album download failed. Please try again.");
+        } finally {
+            setIsDownloadingAlbum(false);
+        }
+    };
 
-      <main>
-        {!selectedTransformation ? (
-          <TransformationSelector 
-            transformations={transformations} 
-            onSelect={handleSelectTransformation} 
-            hasPreviousResult={!!primaryImageUrl}
-            onOrderChange={setTransformations}
-          />
-        ) : (
-          <div className="container mx-auto p-4 md:p-8 animate-fade-in">
-            <div className="mb-8">
-              <button
-                onClick={handleBackToSelection}
-                className="flex items-center gap-2 text-orange-500 hover:text-orange-400 transition-colors duration-200 py-2 px-4 rounded-lg hover:bg-gray-900"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-                Choose Another Effect
-              </button>
-            </div>
+    const handleTemplateSelect = (templateId: TemplateName | null) => {
+        setTemplate(templateId);
+        setHeadshotExpression('Friendly Smile');
+        setHeadshotPose('Forward');
+        setLookbookStyle('');
+        setCustomLookbookStyle('');
+        setHairColors([]);
+        setSelectedHairStyles([]);
+        setCustomHairStyle('');
+        setIsCustomHairActive(false);
+        setMoodStyles([]);
+    };
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              {/* Input Column */}
-              <div className="flex flex-col gap-6 p-6 bg-gray-950/60 backdrop-blur-lg rounded-xl border border-white/10 shadow-2xl shadow-black/20">
-                <div>
-                  <div className="mb-4">
-                    <h2 className="text-xl font-semibold mb-1 text-orange-500 flex items-center gap-3">
-                      <span className="text-3xl">{selectedTransformation.emoji}</span>
-                      {selectedTransformation.title}
-                    </h2>
-                    {selectedTransformation.prompt === 'CUSTOM' ? (
-                        <textarea
-                            value={customPrompt}
-                            onChange={(e) => setCustomPrompt(e.target.value)}
-                            placeholder="e.g., 'make the sky a vibrant sunset' or 'add a small red boat on the water'"
-                            rows={3}
-                            className="w-full mt-2 p-3 bg-gray-900 border border-white/20 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-colors placeholder-gray-500"
-                        />
-                    ) : (
-                       <p className="text-gray-400">{selectedTransformation.description}</p>
-                    )}
-                  </div>
-                  
-                  {selectedTransformation.isMultiImage ? (
-                    <MultiImageUploader
-                      onPrimarySelect={handlePrimaryImageSelect}
-                      onSecondarySelect={handleSecondaryImageSelect}
-                      primaryImageUrl={primaryImageUrl}
-                      secondaryImageUrl={secondaryImageUrl}
-                      onClearPrimary={handleClearPrimaryImage}
-                      onClearSecondary={handleClearSecondaryImage}
-                      primaryTitle={selectedTransformation.primaryUploaderTitle}
-                      primaryDescription={selectedTransformation.primaryUploaderDescription}
-                      secondaryTitle={selectedTransformation.secondaryUploaderTitle}
-                      secondaryDescription={selectedTransformation.secondaryUploaderDescription}
-                    />
-                  ) : (
-                    <ImageEditorCanvas
-                      onImageSelect={handlePrimaryImageSelect}
-                      initialImageUrl={primaryImageUrl}
-                      onMaskChange={setMaskDataUrl}
-                      onClearImage={handleClearPrimaryImage}
-                      isMaskToolActive={activeTool === 'mask'}
-                    />
-                  )}
+    const handleStartOver = () => {
+        setGeneratedImages([]);
+        setUploadedImage(null);
+        setError(null);
+        handleTemplateSelect(null);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
 
-                  {primaryImageUrl && !selectedTransformation.isMultiImage && (
-                    <div className="mt-4">
-                        <button
-                            onClick={toggleMaskTool}
-                            className={`w-full flex items-center justify-center gap-2 py-2 px-3 text-sm font-semibold rounded-md transition-colors duration-200 ${
-                                activeTool === 'mask' ? 'bg-gradient-to-r from-orange-500 to-yellow-400 text-black' : 'bg-gray-800 hover:bg-gray-700'
-                            }`}
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L15.232 5.232z" /></svg>
-                            <span>Draw Mask</span>
-                        </button>
-                    </div>
-                  )}
-                  
-                   <button
-                    onClick={handleGenerate}
-                    disabled={isGenerateDisabled}
-                    className="w-full mt-6 py-3 px-4 bg-gradient-to-r from-orange-500 to-yellow-400 text-black font-semibold rounded-lg shadow-lg shadow-orange-500/20 hover:from-orange-600 hover:to-yellow-500 disabled:bg-gray-800 disabled:from-gray-800 disabled:to-gray-800 disabled:text-gray-500 disabled:shadow-none disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center gap-2"
-                  >
-                    {isLoading ? (
-                      <>
-                        <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        <span>Generating...</span>
-                      </>
-                    ) : (
-                      <>
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                        </svg>
-                        <span>Generate Image</span>
-                      </>
-                    )}
-                  </button>
+    const progress = generatedImages.length > 0
+        ? (generatedImages.filter(img => img.status !== 'pending').length / generatedImages.length) * 100
+        : 0;
+
+    const totalSelectedStyles = selectedHairStyles.length + (isCustomHairActive ? 1 : 0);
+
+    const handleHairStyleSelect = (styleId: string) => {
+        if (styleId === 'Other') {
+            setIsCustomHairActive(prev => {
+                const isActivating = !prev;
+                if (isActivating && selectedHairStyles.length >= 8) {
+                    setError("You can select a maximum of 8 styles.");
+                    return prev;
+                }
+                if (!isActivating) setCustomHairStyle('');
+                return isActivating;
+            });
+            return;
+        }
+
+        setSelectedHairStyles(prev => {
+            const isSelected = prev.includes(styleId);
+            const totalSelected = prev.length + (isCustomHairActive ? 1 : 0);
+            
+            if (isSelected) return prev.filter(s => s !== styleId);
+            
+            if (totalSelected < 8) return [...prev, styleId];
+            
+            setError("You can select a maximum of 8 styles.");
+            return prev;
+        });
+    };
+
+    const handleMoodStyleSelect = (style: string) => {
+        setMoodStyles(prev => {
+            if (prev.includes(style)) {
+                return prev.filter(s => s !== style);
+            }
+            return [...prev, style];
+        });
+    };
+    
+    return (
+        <>
+            <CameraModal isOpen={isCameraOpen} onClose={() => setIsCameraOpen(false)} onCapture={handleCaptureConfirm} />
+            <div className="bg-black text-gray-200 min-h-screen flex flex-col items-center p-4 pb-20">
+                <ErrorNotification message={error} onDismiss={() => setError(null)} />
+                <div className="w-full max-w-6xl mx-auto">
+                    <header className="text-center my-12">
+                        <h1 className="text-6xl md:text-7xl font-caveat text-white tracking-tight">Picture<span className="text-yellow-400">Me</span></h1>
+                        <p className="mt-4 text-lg text-gray-500">Transform your photos with the power of Gemini.</p>
+                    </header>
+                    <main>
+                        <div className="bg-gray-900/50 backdrop-blur-sm p-8 rounded-2xl shadow-2xl border border-gray-800 mb-16">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                                <div>
+                                    <h2 className="text-2xl font-semibold mb-6 text-white">1. Your Photo</h2>
+                                    <div className="w-full aspect-square border-4 border-dashed border-gray-700 rounded-xl flex items-center justify-center cursor-pointer hover:border-yellow-400 transition-colors bg-gray-800 overflow-hidden shadow-inner" onClick={() => !uploadedImage && fileInputRef.current?.click()}>
+                                        {isUploading ? (<div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-yellow-400"></div>) 
+                                        : uploadedImage ? (<img src={uploadedImage} alt="Uploaded preview" className="w-full h-full object-cover" />) 
+                                        : (
+                                            <div className="flex flex-col items-center justify-center p-6 text-center text-gray-500">
+                                                <IconUpload />
+                                                <p className="mt-4 text-lg text-gray-300">Click to upload a file</p>
+                                                <p className="mt-4 text-sm">or</p>
+                                                <Button onClick={(e) => { e.stopPropagation(); setIsCameraOpen(true); }} className="mt-2"><IconCamera /> <span className="ml-2">Use Camera</span></Button>
+                                            </div>
+                                        )}
+                                    </div>
+                                    {uploadedImage && !isUploading && (
+                                        <div className="flex flex-col sm:flex-row gap-4 mt-4 w-full">
+                                            <Button onClick={() => fileInputRef.current?.click()} className="flex-1">Change File</Button>
+                                            <Button onClick={() => setIsCameraOpen(true)} className="flex-1"><IconCamera /><span className="ml-2">Use Camera</span></Button>
+                                        </div>
+                                    )}
+                                    <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/png, image/jpeg" className="hidden" />
+                                </div>
+                                <div>
+                                    <h2 className="text-2xl font-semibold mb-6 text-white">2. Choose a Theme</h2>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
+                                        {(Object.keys(TEMPLATES) as TemplateName[]).map(key => {
+                                            const data = TEMPLATES[key];
+                                            return <TemplateCard key={key} id={key} name={data.name} icon={data.icon} description={data.description} isSelected={template === key} onSelect={handleTemplateSelect} />
+                                        })}
+                                    </div>
+                                    
+                                    {template === 'hairStyler' && (
+                                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="p-6 border border-gray-700 rounded-xl space-y-6 bg-gray-800/50">
+                                            <div className="flex justify-between items-center"><h3 className='text-xl font-semibold text-white'>Customize Hairstyle</h3><span className={`text-sm font-bold ${totalSelectedStyles >= 8 ? 'text-yellow-400' : 'text-gray-500'}`}>{totalSelectedStyles} / 8</span></div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-gray-400 mb-3">Style (select up to 8)</label>
+                                                <div className="flex flex-wrap gap-3">
+                                                    {TEMPLATES.hairStyler.prompts.map(prompt => (<button key={prompt.id} onClick={() => handleHairStyleSelect(prompt.id)} className={`cursor-pointer px-3 py-1.5 text-sm rounded-full transition-colors font-semibold ${selectedHairStyles.includes(prompt.id) ? 'bg-yellow-400 text-black' : 'bg-gray-800 hover:bg-gray-700 text-gray-300'}`}>{prompt.id}</button>))}
+                                                    <button onClick={() => handleHairStyleSelect('Other')} className={`cursor-pointer px-3 py-1.5 text-sm rounded-full transition-colors font-semibold ${isCustomHairActive ? 'bg-yellow-400 text-black' : 'bg-gray-800 hover:bg-gray-700 text-gray-300'}`}>Other...</button>
+                                                </div>
+                                            </div>
+                                            {isCustomHairActive && (<motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}><label className="block text-sm font-medium text-gray-400 mb-2">Your Custom Style</label><input type="text" placeholder="e.g., A vibrant pink mohawk" value={customHairStyle} onChange={(e) => setCustomHairStyle(e.target.value)} className="w-full bg-gray-800 border border-gray-600 rounded-lg py-2 px-4 focus:outline-none focus:ring-2 focus:ring-yellow-400 text-white" /></motion.div>)}
+                                            <div>
+                                                <label className="block text-sm font-medium text-gray-400 mb-3">Hair Color</label>
+                                                <div className="flex items-center gap-4 flex-wrap">
+                                                    {hairColors.map((color, index) => (<motion.div key={index} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="flex items-center gap-2 p-2 bg-gray-700/50 rounded-lg border border-gray-600"><div className="relative w-10 h-10 rounded-md overflow-hidden" style={{ backgroundColor: color }}><input type="color" value={color} onChange={(e) => setHairColors(p => { const n = [...p]; n[index] = e.target.value; return n; })} className="absolute inset-0 w-full h-full cursor-pointer opacity-0" /></div><span className="font-mono text-sm text-gray-300 uppercase">{color}</span><button onClick={() => setHairColors(p => p.filter((_, i) => i !== index))} className="p-1 rounded-full text-gray-500 hover:bg-gray-600 hover:text-red-400 transition-colors" aria-label="Remove color"><IconX /></button></motion.div>))}
+                                                    {hairColors.length < 2 && (<button onClick={() => setHairColors(p => [...p, '#4a2c20'])} className="flex items-center justify-center gap-2 h-[68px] px-4 rounded-lg border-2 border-dashed border-gray-600 hover:border-yellow-400 text-gray-400 hover:text-yellow-400 transition-colors bg-gray-700/30"><IconPlus /><span>{hairColors.length === 0 ? 'Add Color' : 'Add Highlight'}</span></button>)}
+                                                </div>
+                                                {hairColors.length > 0 && (<button onClick={() => setHairColors([])} className="text-xs text-gray-500 hover:text-white transition-colors mt-3">Clear all colors</button>)}
+                                            </div>
+                                        </motion.div>
+                                    )}
+                                    {template === 'headshots' && (
+                                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="p-6 border border-gray-700 rounded-xl space-y-6 bg-gray-800/50">
+                                            <h3 className='text-xl font-semibold text-white'>Customize Headshot</h3>
+                                            <div><label className="block text-sm font-medium text-gray-400 mb-3">Facial Expression</label><div className="flex flex-wrap gap-3"><RadioPill name="expression" value="Friendly Smile" label="Friendly Smile" checked={headshotExpression === 'Friendly Smile'} onChange={e => setHeadshotExpression(e.target.value)} /><RadioPill name="expression" value="Confident Look" label="Confident Look" checked={headshotExpression === 'Confident Look'} onChange={e => setHeadshotExpression(e.target.value)} /><RadioPill name="expression" value="Thoughtful Gaze" label="Thoughtful Gaze" checked={headshotExpression === 'Thoughtful Gaze'} onChange={e => setHeadshotExpression(e.target.value)} /></div></div>
+                                            <div><label className="block text-sm font-medium text-gray-400 mb-3">Pose</label><div className="flex flex-wrap gap-3"><RadioPill name="pose" value="Forward" label="Facing Forward" checked={headshotPose === 'Forward'} onChange={e => setHeadshotPose(e.target.value)} /><RadioPill name="pose" value="Angle" label="Slight Angle" checked={headshotPose === 'Angle'} onChange={e => setHeadshotPose(e.target.value)} /></div></div>
+                                        </motion.div>
+                                    )}
+                                    {template === 'styleLookbook' && (
+                                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="p-6 border border-gray-700 rounded-xl space-y-8 bg-gray-800/50">
+                                            <div>
+                                                <h3 className='text-xl font-semibold text-white'>Choose a Fashion Style</h3>
+                                                <div className="mt-4"><div className="flex flex-wrap gap-3">{(TEMPLATES.styleLookbook as StyleLookbookTemplate).styles.map(style => (<RadioPill key={style} name="style" value={style} label={style} checked={lookbookStyle === style} onChange={e => { setLookbookStyle(e.target.value); setCustomLookbookStyle(''); }} />))}<RadioPill name="style" value="Other" label="Other..." checked={lookbookStyle === 'Other'} onChange={e => setLookbookStyle(e.target.value)} /></div></div>
+                                                {lookbookStyle === 'Other' && (<motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mt-4"><label className="block text-sm font-medium text-gray-400 mb-2">Your Custom Style</label><input type="text" placeholder="e.g., Cyberpunk, Avant-garde" value={customLookbookStyle} onChange={(e) => setCustomLookbookStyle(e.target.value)} className="w-full bg-gray-800 border border-gray-600 rounded-lg py-2 px-4 focus:outline-none focus:ring-2 focus:ring-yellow-400 text-white" /></motion.div>)}
+                                            </div>
+                                            <div>
+                                                <h3 className='text-xl font-semibold text-white'>Change mood style</h3>
+                                                <p className="text-sm text-gray-400 mt-1 mb-3">Optional: Select photographic styles to apply.</p>
+                                                <div className="flex flex-wrap gap-3">
+                                                    {(TEMPLATES.styleLookbook as StyleLookbookTemplate).moods.map(mood => (
+                                                        <button 
+                                                            key={mood} 
+                                                            onClick={() => handleMoodStyleSelect(mood)} 
+                                                            className={`cursor-pointer px-3 py-1.5 text-sm rounded-full transition-colors font-semibold ${moodStyles.includes(mood) ? 'bg-yellow-400 text-black' : 'bg-gray-800 hover:bg-gray-700 text-gray-300'}`}
+                                                        >
+                                                            {mood}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </motion.div>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="mt-12 text-center">
+                                <Button onClick={handleGenerateClick} disabled={!uploadedImage || !template || isLoading || isUploading || isSettingUp} primary className="text-lg px-12 py-4">
+                                    <div className="flex items-center gap-3">
+                                        {isLoading || isSettingUp ? (<><div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-black"></div>{isSettingUp ? "Setting the stage..." : `Generating... (${Math.round(progress)}%)`}</>) : (<><IconSparkles />Generate Photos</>)}
+                                    </div>
+                                </Button>
+                            </div>
+                        </div>
+                        <div ref={resultsRef}>
+                            {isSettingUp && (
+                                <div className="text-center my-20 flex flex-col items-center p-10 bg-gray-900/70 rounded-2xl"><div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-pink-500 mb-6"></div><p className="text-2xl text-pink-400 font-semibold tracking-wider italic">Teasing our hair and firing up the lasers...</p><p className="text-gray-400 mt-2">Generating a totally tubular '80s photoshoot style!</p></div>
+                            )}
+                            {(isLoading || generatedImages.length > 0) && !isSettingUp && (
+                                <div className="mt-16">
+                                    <h2 className="text-3xl font-bold text-white mb-8 text-center">Your Generated Photos</h2>
+                                    {isLoading && (
+                                        <div className="w-full max-w-4xl mx-auto mb-8 text-center"><div className="bg-gray-800 rounded-full h-3 overflow-hidden shadow-md"><motion.div className="bg-yellow-400 h-3 rounded-full" initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ duration: 0.5 }} /></div><p className="text-gray-400 mt-4 text-sm">Please keep this window open while your photos are being generated.</p></div>
+                                    )}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-10 mt-8">
+                                        {generatedImages.map((img, index) => {
+                                            if (!template) return null;
+                                            const activeTemplate = TEMPLATES[template];
+                                            const isPolaroid = activeTemplate.isPolaroid;
+                                            const showLabel = !['headshots', 'eightiesMall', 'styleLookbook', 'figurines'].includes(template);
+                                            switch (img.status) {
+                                                case 'success': return <PhotoDisplay key={`${img.id}-${index}-success`} era={img.id} imageUrl={img.imageUrl!} onDownload={handleDownloadRequest} onRegenerate={() => regenerateImageAtIndex(index)} isPolaroid={isPolaroid} index={index} showLabel={showLabel} />;
+                                                case 'failed': return <ErrorCard key={`${img.id}-${index}-failed`} isPolaroid={isPolaroid} onRegenerate={() => regenerateImageAtIndex(index)} showLabel={showLabel} />;
+                                                default: return <LoadingCard key={`${img.id}-${index}-pending`} isPolaroid={isPolaroid} showLabel={showLabel} />;
+                                            }
+                                        })}
+                                    </div>
+                                    <p className="text-center text-xs text-gray-600 mt-8">Made with Gemini</p>
+                                </div>
+                            )}
+                            {!isLoading && generatedImages.length > 0 && (
+                                <div className="text-center mt-16 mb-12 flex justify-center gap-6">
+                                    <Button onClick={handleStartOver}>Start Over</Button>
+                                    <AlbumDownloadButton isDownloading={isDownloadingAlbum} onDownloadRequest={handleAlbumDownloadRequest} />
+                                </div>
+                            )}
+                        </div>
+                    </main>
                 </div>
-              </div>
-
-              {/* Output Column */}
-              <div className="flex flex-col p-6 bg-gray-950/60 backdrop-blur-lg rounded-xl border border-white/10 shadow-2xl shadow-black/20">
-                <h2 className="text-xl font-semibold mb-4 text-orange-500 self-start">Result</h2>
-                {isLoading && <div className="flex-grow flex items-center justify-center"><LoadingSpinner message={loadingMessage} /></div>}
-                {error && <div className="flex-grow flex items-center justify-center w-full"><ErrorMessage message={error} /></div>}
-                {!isLoading && !error && generatedContent && (
-                    <ResultDisplay 
-                        content={generatedContent} 
-                        onUseImageAsInput={handleUseImageAsInput}
-                        onImageClick={handleOpenPreview}
-                        originalImageUrl={primaryImageUrl}
-                    />
-                )}
-                {!isLoading && !error && !generatedContent && (
-                  <div className="flex-grow flex flex-col items-center justify-center text-center text-gray-500">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                    <p className="mt-2">Your generated image will appear here.</p>
-                  </div>
-                )}
-              </div>
             </div>
-          </div>
-        )}
-      </main>
-      <ImagePreviewModal imageUrl={previewImageUrl} onClose={handleClosePreview} />
-      <HistoryPanel
-        isOpen={isHistoryPanelOpen}
-        onClose={toggleHistoryPanel}
-        history={history}
-        onUseImage={handleUseHistoryImageAsInput}
-        onDownload={handleDownloadFromHistory}
-      />
-    </div>
-  );
+        </>
+    );
 };
-
-// Add fade-in animation for view transitions
-const style = document.createElement('style');
-style.innerHTML = `
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .animate-fade-in {
-    animation: fadeIn 0.4s ease-out forwards;
-  }
-  @keyframes fadeInFast {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  .animate-fade-in-fast {
-    animation: fadeInFast 0.2s ease-out forwards;
-  }
-`;
-document.head.appendChild(style);
-
 
 export default App;
